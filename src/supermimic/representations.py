@@ -492,7 +492,27 @@ class GenCoordRepresentation(StateRepresentation):
 
   def bind(self, env: ManagerBasedRlEnv, sim_context: SimContext) -> None:
     super().bind(env, sim_context)
-    self.fk = env.command_manager.get_term("motion").motion.fk
+    motion = env.command_manager.get_term("motion").motion
+    if hasattr(motion, "fk"):
+      self.fk = motion.fk
+    else:
+      from supermimic.utils.differentiable_fk import (
+        DifferentiableFK,
+        DifferentiableFKWithVelocity,
+      )
+
+      robot = env.scene["robot"]
+      model = env.sim.mj_model
+      command = env.command_manager.get_term("motion")
+      root_name = model.body(int(robot.indexing.root_body_id)).name
+      joints = [model.joint(int(i)).name for i in robot.indexing.joint_ids]
+      bodies = [
+        model.body(int(robot.indexing.body_ids[int(i)])).name
+        for i in command.body_indexes
+      ]
+      self.fk = DifferentiableFKWithVelocity(
+        DifferentiableFK(model, root_name, joints, bodies)
+      ).to(env.device)
 
   def represent(self, full_state: torch.Tensor) -> torch.Tensor:
     flat = full_state.reshape(-1, self.full_state_dim)

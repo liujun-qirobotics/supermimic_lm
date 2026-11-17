@@ -10,7 +10,24 @@ from __future__ import annotations
 import mujoco
 import torch
 import torch.nn as nn
-from mjlab.utils.lab_api.math import quat_apply, quat_mul
+
+
+def _quat_mul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+  """Hamilton product in wxyz order using JVP-compatible PyTorch operations."""
+  aw, av = a[..., :1], a[..., 1:]
+  bw, bv = b[..., :1], b[..., 1:]
+  return torch.cat(
+    (aw * bw - (av * bv).sum(dim=-1, keepdim=True),
+     aw * bv + bw * av + torch.cross(av, bv, dim=-1)),
+    dim=-1,
+  )
+
+
+def _quat_apply(quat: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
+  """Rotate vectors without invoking a TorchScript function inside JVP."""
+  xyz = quat[..., 1:]
+  t = 2 * torch.cross(xyz, vec, dim=-1)
+  return vec + quat[..., :1] * t + torch.cross(xyz, t, dim=-1)
 
 
 class DifferentiableFK(nn.Module):
@@ -100,11 +117,34 @@ class DifferentiableFK(nn.Module):
           (half.cos().unsqueeze(-1), half.sin().unsqueeze(-1) * axis), dim=-1
         )
         anchor = self.joint_pos[joint_id].to(joint_pos).expand_as(root_pos)
-        local_p = local_p + quat_apply(local_q, anchor - quat_apply(rotation, anchor))
-        local_q = quat_mul(local_q, rotation)
-      positions[body_id] = parent_p + quat_apply(parent_q, local_p)
-      rotations[body_id] = quat_mul(parent_q, local_q)
+        local_p = local_p + _quat_apply(local_q, anchor - _quat_apply(rotation, anchor))
+        local_q = _quat_mul(local_q, rotation)
+      positions[body_id] = parent_p + _quat_apply(parent_q, local_p)
+      rotations[body_id] = _quat_mul(parent_q, local_q)
     return (
       torch.stack([positions[i] for i in self.output_ids], dim=-2),
       torch.stack([rotations[i] for i in self.output_ids], dim=-2),
     )
+
+
+class DifferentiableFKWithVelocity(nn.Module):
+  """World-frame link pose and velocity from a pose FK using directional JVP."""
+
+  def __init__(self, pose_fk: DifferentiableFK):
+    super().__init__()
+    self.pose_fk = pose_fk
+
+  def forward(
+    self, root_pos, root_quat, joint_pos, root_lin_vel, root_ang_vel, joint_vel
+  ):
+    # For a body-to-world quaternion, qdot = 1/2 * [0, omega_world] * q.
+    omega = torch.cat((torch.zeros_like(root_ang_vel[..., :1]), root_ang_vel), -1)
+    root_qdot = 0.5 * _quat_mul(omega, root_quat)
+    (pos, quat), (lin_vel, quat_dot) = torch.func.jvp(
+      self.pose_fk,
+      (root_pos.contiguous(), root_quat.contiguous(), joint_pos.contiguous()),
+      (root_lin_vel.contiguous(), root_qdot.contiguous(), joint_vel.contiguous()),
+    )
+    quat_inv = torch.cat((quat[..., :1], -quat[..., 1:]), dim=-1)
+    ang_vel = 2.0 * _quat_mul(quat_dot, quat_inv)[..., 1:]
+    return pos, quat, lin_vel, ang_vel

@@ -11,6 +11,7 @@ from supermimic.joint_actor import JointCommandActor
 from supermimic.learners.wm_learner import WorldModelLearnerCfg
 from supermimic.runners.joint_collection import JointReplayCollector, full_state
 from supermimic.runners.joint_world_model import JointWorldModel
+from supermimic.tasks.joint_command import interpolate_reference_joints
 from supermimic.tasks.joint_env import joint_g1_env_cfg
 from supermimic.utils.differentiable_fk import DifferentiableFK
 
@@ -26,16 +27,40 @@ def test_joint_environment_reset_and_step():
     assert obs["critic"].shape == (2, 139)
     targets = env.command_manager.get_command("hands").reshape(2, 2, 7)
     assert torch.allclose(targets[..., 3:].norm(dim=-1), torch.ones(2, 2), atol=1e-5)
+    hands = env.command_manager.get_term("hands")
+    hands.foot_anchor[1] = 123.0
+    hands.was_standing[1] = True
+    hands._update_command(torch.tensor([0], device=env.device))
+    assert torch.all(hands.foot_anchor[1] == 123.0)
+    assert hands.was_standing[1]
     collector = JointReplayCollector(env, buffer_size=8)
     first_state = full_state(env).clone()
     first_obs = obs["actor"].clone()
+    start = hands.transition_start.clone()
+    target = hands.transition_target.clone()
+    elapsed = (hands.transition_time_left_at_start - hands.time_left).clone()
     obs, reward, terminated, truncated, _ = collector.step(
       torch.zeros(2, 29), first_obs
     )
     assert torch.isfinite(obs["actor"]).all()
     assert torch.isfinite(reward).all()
     assert terminated.shape == truncated.shape == (2,)
+    assert not (terminated | truncated).any()
+    expected_q = interpolate_reference_joints(
+      start, target, (elapsed + env.step_dt) / hands.cfg.transition_duration
+    )
+    root = torch.zeros(2, 3)
+    quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]]).repeat(2, 1)
+    p, q = hands.fk(root, quat, expected_q)
+    expected = torch.cat((p, q), dim=-1).flatten(start_dim=1)
+    torch.testing.assert_close(hands.command, expected, atol=1e-6, rtol=1e-6)
+    stored = collector.buffer._storage
+    torch.testing.assert_close(stored["hand_transition_start"][:, 0], start)
+    torch.testing.assert_close(stored["hand_transition_target"][:, 0], target)
+    next_state = full_state(env).clone()
     collector.step(torch.zeros(2, 29), obs["actor"])
+    torch.testing.assert_close(stored["state"][:, 1], next_state)
+    torch.testing.assert_close(stored["action"][:, 0], torch.zeros(2, 29))
     sample = collector.buffer.sample(sequence_length=2, batch_size=4)
     assert torch.isfinite(sample["state"]).all()
     assert sample["command"].shape == (4, 2, 17)
@@ -100,5 +125,11 @@ def test_joint_environment_reset_and_step():
     assert any(
       p.grad is not None and p.grad.abs().sum() > 0 for p in actor.parameters()
     )
+    events = env.event_manager
+    index = events._mode_term_names["interval"].index("push_robot")
+    events._interval_term_time_left[index][:] = env.step_dt * 0.5
+    slot = collector.buffer._step
+    collector.step(torch.zeros(2, 29), obs["actor"])
+    assert collector.buffer._storage["wm_invalid"][:, slot].all()
   finally:
     env.close()

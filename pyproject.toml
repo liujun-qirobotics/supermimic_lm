@@ -12,6 +12,7 @@ license-files = ["LICENSE"]
 requires-python = ">=3.13,<3.14"
 dependencies = [
     "mjlab",
+    "mjviser==0.0.16",
     "ruff>=0.14.10",
     "viser>=1.0.24",
 ]

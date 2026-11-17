@@ -55,10 +55,15 @@ class JointWorldModel:
     self.cfg = cfg
 
   def update(self) -> dict[str, torch.Tensor]:
-    samples = [
-      self.collector.buffer.sample(self.cfg.horizon, self.cfg.batch_size)
-      for _ in range(self.cfg.num_batches)
-    ]
+    try:
+      samples = [
+        self.collector.buffer.sample(self.cfg.horizon, self.cfg.batch_size, boundary_field="wm_invalid")
+        for _ in range(self.cfg.num_batches)
+      ]
+    except RuntimeError as exc:
+      if str(exc).startswith("no valid sequences"):
+        return {}
+      raise
     states = torch.stack([sample["state"] for sample in samples])
     actions = torch.stack([sample["action"] for sample in samples])
     self.learner.update_normalization(states, actions)

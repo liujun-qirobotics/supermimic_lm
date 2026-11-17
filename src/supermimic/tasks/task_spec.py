@@ -117,8 +117,7 @@ def make_velocity_task(
   ``t`` (``0`` or ``1`` = raw instantaneous). The reference motion is
   known offline, so there is no causality constraint — centering avoids
   the ~N/2 * dt lag a causal window would introduce. The window clamps to
-  the concatenated motion array (not per clip), so frames within ~N/2 of a
-  clip boundary average in a neighbouring clip's velocity.
+  each motion clip, so values at clip boundaries never mix unrelated motions.
   """
   lo = torch.tensor(
     [lin_vel_x_range[0], lin_vel_y_range[0], ang_vel_z_range[0]], device=device
@@ -131,7 +130,7 @@ def make_velocity_task(
   def _clamp(cmd):
     return torch.clamp(cmd, lo.to(cmd.device), hi.to(cmd.device))
 
-  def _centered_mean(track, motion_times):
+  def _centered_mean(track, motion_times, ends):
     if window_frames <= 1:
       return track[motion_times]
     half = window_frames // 2
@@ -139,12 +138,19 @@ def make_velocity_task(
       torch.arange(window_frames, device=motion_times.device, dtype=motion_times.dtype)
       - half
     )
-    idx = (motion_times.unsqueeze(-1) + offsets).clamp(min=0, max=track.shape[0] - 1)
+    clip = torch.searchsorted(ends, motion_times.contiguous(), right=True).clamp(max=ends.numel() - 1)
+    starts = torch.cat((ends.new_zeros(1), ends[:-1]))
+    idx = motion_times.unsqueeze(-1) + offsets
+    idx = torch.maximum(idx, starts[clip].unsqueeze(-1))
+    idx = torch.minimum(idx, (ends[clip] - 1).unsqueeze(-1))
     return track[idx].mean(dim=1)
 
   def _body_frame_cmd(motion, times, quat):
-    v_b = quat_apply_inverse(quat, _centered_mean(motion.root_lin_vel_w, times))
-    w_b = quat_apply_inverse(quat, _centered_mean(motion.root_ang_vel_w, times))
+    ends = getattr(motion, "motion_ends", None)
+    if ends is None:
+      ends = times.new_tensor([motion.root_lin_vel_w.shape[0]])
+    v_b = quat_apply_inverse(quat, _centered_mean(motion.root_lin_vel_w, times, ends))
+    w_b = quat_apply_inverse(quat, _centered_mean(motion.root_ang_vel_w, times, ends))
     return torch.stack([v_b[:, 0], v_b[:, 1], w_b[:, 2]], dim=-1)
 
   def extract(motion, motion_times, aux_state):

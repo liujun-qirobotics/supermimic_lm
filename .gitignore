@@ -218,3 +218,6 @@ __marimo__/
 **/logs/
 **/wandb/*
 **/artifacts/
+
+# Locally generated reference motions; LAFAN1 licensing applies.
+/data/motions/

@@ -14,6 +14,15 @@ import torch.nn.functional as F
 from mjlab.utils.lab_api.math import quat_apply_inverse, quat_conjugate, quat_mul
 
 
+def interpolate_reference_joints(
+  start: torch.Tensor, end: torch.Tensor, fraction: torch.Tensor
+) -> torch.Tensor:
+  """Interpolate joint references with zero endpoint velocities."""
+  u = fraction.clamp(0.0, 1.0)
+  u = (u * u * (3.0 - 2.0 * u))[..., None]
+  return start + u * (end - start)
+
+
 @dataclass(frozen=True)
 class JointCommand:
   """A simultaneous velocity command and two body-relative hand poses.
@@ -61,6 +70,7 @@ def joint_tracking_errors(
   Quaternion error is 1 - dot(q, q_target)^2: sign-invariant and smooth
   near matching orientations. Inputs must contain valid, nonzero quaternions.
   """
+
   def pose_error(actual: torch.Tensor, target: torch.Tensor):
     position = (actual[..., :3] - target[..., :3]).square().sum(dim=-1)
     qa = F.normalize(actual[..., 3:7], dim=-1)

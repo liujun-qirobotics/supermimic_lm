@@ -76,6 +76,15 @@ class TestVelocityExtraction:
 
 
 class TestCenteredWindow:
+  def test_window_does_not_mix_adjacent_reference_clips(self):
+    lin = torch.zeros(6, 3)
+    lin[3:, 0] = 6.0
+    motion = FakeMotion(lin, torch.zeros(6, 3))
+    motion.motion_ends = torch.tensor([3, 6])
+    task = _velocity_task(window_frames=3)
+    goal = task.extract_training_goal(motion, torch.tensor([2, 3]), identity_aux(2))
+    torch.testing.assert_close(goal[:, 0], torch.tensor([0., 6.]))
+
   def test_window_averages_centered_motion_velocity(self):
     """window_frames=3 at time 4 averages frames {3, 4, 5} of root_lin_vel_w."""
     lin = torch.zeros(10, 3)

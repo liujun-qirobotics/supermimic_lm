@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import fields
 from typing import cast
 
 import mjlab.envs.mdp as mdp
@@ -10,7 +11,7 @@ from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
 from mjlab.managers import ObservationGroupCfg, ObservationTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.tasks.tracking.config.g1.env_cfgs import unitree_g1_flat_tracking_env_cfg
-from mjlab.tasks.tracking.mdp.commands import MotionCommand
+from mjlab.tasks.tracking.mdp.commands import MotionCommand, MotionLoader
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 
 from supermimic.representations import (
@@ -19,6 +20,7 @@ from supermimic.representations import (
   motion_anchor_window,
   motion_goal_window,
 )
+from supermimic.tasks.motion_compat import CompatibleMotionCommandCfg
 
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
 
@@ -162,6 +164,16 @@ def _goal_obs_group() -> ObservationGroupCfg:
 def gencoord_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   """Create generalized-coordinate world model environment configuration based on G1 tracking."""
   cfg = unitree_g1_flat_tracking_env_cfg(play=play)
+
+  if not hasattr(MotionLoader, "body_state"):
+    original_motion = cfg.commands["motion"]
+    cfg.commands["motion"] = CompatibleMotionCommandCfg(
+      **{
+        f.name: getattr(original_motion, f.name)
+        for f in fields(original_motion)
+        if f.init
+      }
+    )
 
   cfg.commands["motion"].anchor_body_name = "pelvis"
 

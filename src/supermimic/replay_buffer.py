@@ -93,7 +93,9 @@ class ReplayBuffer:
     slot = (base + torch.where(reachable, ages, first_age)) % T
     return self._storage[env_idx[:, None], slot], ~reachable
 
-  def sample(self, sequence_length: int, batch_size: int) -> TensorDict:
+  def sample(
+    self, sequence_length: int, batch_size: int, *, boundary_field: str | None = None
+  ) -> TensorDict:
     L, B, E, T = sequence_length, batch_size, self.num_envs, self.buffer_size
     dev, n = self.device, self.num_transitions
     if L > T:
@@ -105,6 +107,10 @@ class ReplayBuffer:
     ended = (self._storage["terminated"] | self._storage["truncated"])[
       :, (base + ages) % T
     ].long()
+    if boundary_field is not None:
+      if boundary_field not in self._storage.keys():
+        raise ValueError(f"unknown boundary field: {boundary_field}")
+      ended = ended | self._storage[boundary_field][:, (base + ages) % T].long()
     # Interior [a, a+L-2] is done-free iff c[a+L-1] == c[a] (c is cumsum with leading 0).
     c = torch.cat(
       [ended.new_zeros(E, 1), ended.cumsum(1), ended.new_zeros(E, L - 1)], dim=1

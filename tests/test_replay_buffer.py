@@ -38,6 +38,22 @@ def test_insert_increments_counter():
   assert buf.num_transitions == 5
 
 
+def test_world_model_boundary_excludes_interrupted_transitions_only():
+  schema = {**_schema(), "wm_invalid": FieldSpec(dtype=torch.bool)}
+  buf = ReplayBuffer(schema, buffer_size=8, num_envs=1)
+  for i in range(8):
+    row = _step_td(1, float(i))
+    row["wm_invalid"] = torch.tensor([i == 3])
+    buf.insert(row)
+  windows = buf.sample(4, 100, boundary_field="wm_invalid")
+  assert not windows["wm_invalid"][:, :-1].any()
+  # A marked final state is still valid: its following transition is not used.
+  assert (windows["state"][:, -1, 0] == 3).any()
+  # The causal observation history does not treat a push as an episode reset.
+  history, padded = buf.sample_causal(4, 200)
+  assert ((history["state"][:, 0, 0] == 2) & ~padded[:, 0]).any()
+
+
 def test_insert_caps_at_buffer_size():
   buf = ReplayBuffer(_schema(), buffer_size=10, num_envs=4)
   for i in range(25):
